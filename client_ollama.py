@@ -52,26 +52,64 @@ def trim_messages(messages: list, max_pairs: int = MAX_HISTORY) -> list:
     return [messages[0]] + messages[-(max_pairs * 2):]
 
 
-def stream_response(client, model, messages, tools):
+import re
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_think(text: str) -> str:
+    """Remove <think>...</think> blocks from Qwen output."""
+    return _THINK_RE.sub("", text).strip()
+
+
+def stream_response(client, model, messages, tools, show_label=True):
     """Stream a chat completion, printing tokens as they arrive."""
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools,
-        stream=True,
-    )
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+        )
+    except Exception as e:
+        print(f"\n[Error calling LLM: {e}]")
+        return "", None
 
     content_parts = []
     tool_calls_by_index: dict[int, dict] = {}
-    print("\nAssistant: ", end="", flush=True)
+    in_think = False
+    label_printed = False
 
     for chunk in stream:
+        if not chunk.choices:
+            continue
         delta = chunk.choices[0].delta
 
-        # Stream text content
+        # Stream text content, hiding <think> blocks
         if delta.content:
-            print(delta.content, end="", flush=True)
             content_parts.append(delta.content)
+            # Buffer and detect think blocks
+            partial = "".join(content_parts)
+            if "<think>" in partial and "</think>" not in partial:
+                in_think = True
+                continue
+            if in_think and "</think>" in partial:
+                in_think = False
+                visible = _strip_think(partial)
+                content_parts.clear()
+                content_parts.append(visible)
+                if visible and show_label:
+                    if not label_printed:
+                        print("\nAssistant: ", end="", flush=True)
+                        label_printed = True
+                    print(visible, end="", flush=True)
+                continue
+            if not in_think:
+                if show_label and not label_printed:
+                    print("\nAssistant: ", end="", flush=True)
+                    label_printed = True
+                if show_label:
+                    print(delta.content, end="", flush=True)
 
         # Accumulate tool calls
         if delta.tool_calls:
@@ -92,18 +130,55 @@ def stream_response(client, model, messages, tools):
                     if tc.function.arguments:
                         entry["function"]["arguments"] += tc.function.arguments
 
-    content = "".join(content_parts)
+    raw_content = "".join(content_parts)
+    content = _strip_think(raw_content)
     tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else None
 
-    if not tool_calls and content:
+    if not tool_calls and content and label_printed:
         print(flush=True)
 
     return content, tool_calls
 
 
+def fallback_response(client, model, messages, tools):
+    """Non-streaming fallback when stream returns empty."""
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=False,
+        )
+        msg = response.choices[0].message
+        content = _strip_think(msg.content or "")
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+        return content, tool_calls
+    except Exception as e:
+        print(f"\n[Fallback error: {e}]")
+        return "", None
+
+
 async def process_response(client, session, messages, openai_tools):
     """Process tool calls in a loop until the model gives a final text answer."""
     content, tool_calls = stream_response(client, OLLAMA_MODEL, messages, openai_tools)
+
+    # Retry with non-streaming if stream returned nothing
+    if not content and not tool_calls:
+        content, tool_calls = fallback_response(client, OLLAMA_MODEL, messages, openai_tools)
+        if content:
+            print(f"\nAssistant: {content}", flush=True)
 
     while tool_calls:
         assistant_dict = {
@@ -130,10 +205,16 @@ async def process_response(client, session, messages, openai_tools):
                 "content": result_text,
             })
 
-        content, tool_calls = stream_response(client, OLLAMA_MODEL, messages, openai_tools)
+        content, tool_calls = stream_response(client, OLLAMA_MODEL, messages, openai_tools, show_label=True)
+        if not content and not tool_calls:
+            content, tool_calls = fallback_response(client, OLLAMA_MODEL, messages, openai_tools)
+            if content:
+                print(f"\nAssistant: {content}", flush=True)
 
-    final_text = content or ""
+    final_text = content or "(No response — try rephrasing your question)"
     messages.append({"role": "assistant", "content": final_text})
+    if not content:
+        print(f"\nAssistant: {final_text}", flush=True)
     print()
     return final_text
 
@@ -189,6 +270,13 @@ async def run():
                     "use the get_spends_by_month tool with the month as an integer "
                     "(1 = January, 2 = February, ..., 12 = December).\n"
                     "When the user says 'this month' use the current month based on today's date.\n"
+                    "When the user asks about spends for an entire year or annual totals, "
+                    "use the get_spends_by_year tool with the year number (e.g. 2026).\n"
+                    "When the user says 'this year' use the current year based on today's date.\n"
+                    "When the user only needs the total amount for a year (not individual spends), "
+                    "use get_yearly_total — it's faster.\n"
+                    "When the user wants to compare totals across multiple years, "
+                    "use get_multi_year_totals with comma-separated years (e.g. '2024,2025,2026').\n"
                     "When the user wants to create a new spend, use the create_spend tool.\n"
                     "When the user asks to filter or search spends by category or spend type, "
                     "first call get_spend_types to find the matching type ID, then call "

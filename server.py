@@ -173,6 +173,91 @@ async def get_spends_by_month(month_id: int) -> str:
 
 
 @mcp.tool()
+async def get_spends_by_year(year: int) -> str:
+    """Retrieve all spends for a given year with total amount and count.
+
+    Args:
+        year: Year number (e.g. 2026, 2025).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/{year}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code == 200:
+        return response.text
+    else:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+
+@mcp.tool()
+async def get_yearly_total(year: int) -> str:
+    """Get the total spending amount and transaction count for a given year.
+    Lighter than get_spends_by_year — returns only totals, no individual spends.
+
+    Args:
+        year: Year number (e.g. 2026, 2025).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/total/{year}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code == 200:
+        return response.text
+    else:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+
+@mcp.tool()
+async def get_multi_year_totals(years: str) -> str:
+    """Get total spending for multiple years to compare across years.
+
+    Args:
+        years: Comma-separated list of years (e.g. '2024,2025,2026').
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    results = []
+    for year_str in years.split(","):
+        year = int(year_str.strip())
+        url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/total/{year}/"
+        response = await _http_client.get(url, headers=headers)
+        if response.status_code == 200:
+            results.append(json.loads(response.text))
+        else:
+            results.append({"year": year, "error": f"Status {response.status_code}"})
+
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool()
 async def create_spend(
     date: str,
     description: str,

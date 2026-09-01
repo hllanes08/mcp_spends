@@ -243,14 +243,18 @@ async def search_spends_by_category(month_id: int, spend_type: int) -> str:
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
 
-    spends = json.loads(response.text)
-    filtered = [s for s in spends if s.get("spend_type") == spend_type]
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    filtered = [
+        s for s in spends
+        if (s.get("spend_type") if isinstance(s.get("spend_type"), int) else (s.get("spend_type") or {}).get("id")) == spend_type
+    ]
     total = sum(float(s.get("amount", 0)) for s in filtered)
     return json.dumps({
         "spend_type": spend_type,
         "month": month_id,
         "count": len(filtered),
-        "total": total,
+        "total": round(total, 2),
         "spends": filtered,
     }, indent=2)
 
@@ -278,7 +282,8 @@ async def get_spends_grouped_by_location(month_id: int) -> str:
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
 
-    spends = json.loads(response.text)
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
     groups: dict[str, list] = {}
     for s in spends:
         loc = s.get("location", "Unknown") or "Unknown"
@@ -316,7 +321,8 @@ async def summarize_spends(month_id: int) -> str:
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
 
-    spends = json.loads(response.text)
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
     if not spends:
         return json.dumps({"month": month_id, "message": "No spends found."})
 
@@ -324,7 +330,8 @@ async def summarize_spends(month_id: int) -> str:
 
     by_type: dict[str, dict] = {}
     for s in spends:
-        st = str(s.get("spend_type", "Unknown"))
+        st_raw = s.get("spend_type", "Unknown")
+        st = st_raw.get("name", str(st_raw)) if isinstance(st_raw, dict) else str(st_raw)
         entry = by_type.setdefault(st, {"count": 0, "total": 0.0})
         entry["count"] += 1
         entry["total"] += float(s.get("amount", 0))

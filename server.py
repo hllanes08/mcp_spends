@@ -15,6 +15,9 @@ mcp = FastMCP(
 
 API_BASE_URL = os.getenv("API_BASE_URL", "")
 
+# Shared HTTP client — reuses TCP connections across tool calls
+_http_client = httpx.AsyncClient(timeout=30.0)
+
 _TOKEN_FILE = os.path.join(os.path.dirname(__file__), ".session_token")
 
 
@@ -86,12 +89,10 @@ async def login(username: str, password: str) -> str:
         return "Error: API_BASE_URL is not set in .env"
 
     url = f"{API_BASE_URL.rstrip('/')}/api/token/"
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            url,
-            json={"username": username, "password": password},
-            timeout=30.0,
-        )
+    response = await _http_client.post(
+        url,
+        json={"username": username, "password": password},
+    )
 
     if response.status_code == 200:
         data = response.json()
@@ -131,19 +132,17 @@ async def api_request(endpoint: str, method: str = "GET", body: str = "") -> str
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        json_body = None
-        if body and method.upper() in ("POST", "PUT", "PATCH"):
-            json_body = json.loads(body)
+    json_body = None
+    if body and method.upper() in ("POST", "PUT", "PATCH"):
+        json_body = json.loads(body)
 
-        response = await client.request(
-            method=method.upper(),
-            url=url,
-            headers=headers,
-            json=json_body,
-            timeout=30.0,
-        )
-        return f"Status: {response.status_code}\n{response.text}"
+    response = await _http_client.request(
+        method=method.upper(),
+        url=url,
+        headers=headers,
+        json=json_body,
+    )
+    return f"Status: {response.status_code}\n{response.text}"
 
 
 @mcp.tool()
@@ -165,8 +164,7 @@ async def get_spends_by_month(month_id: int) -> str:
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, timeout=30.0)
+    response = await _http_client.get(url, headers=headers)
 
     if response.status_code == 200:
         return response.text
@@ -213,8 +211,7 @@ async def create_spend(
         "location": location,
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+    response = await _http_client.post(url, headers=headers, json=payload)
 
     if response.status_code in (200, 201):
         return f"Spend created successfully.\n{response.text}"
@@ -241,8 +238,7 @@ async def search_spends_by_category(month_id: int, spend_type: int) -> str:
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, timeout=30.0)
+    response = await _http_client.get(url, headers=headers)
 
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
@@ -277,8 +273,7 @@ async def get_spends_grouped_by_location(month_id: int) -> str:
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, timeout=30.0)
+    response = await _http_client.get(url, headers=headers)
 
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
@@ -292,7 +287,7 @@ async def get_spends_grouped_by_location(month_id: int) -> str:
     summary = {}
     for loc, items in groups.items():
         total = sum(float(i.get("amount", 0)) for i in items)
-        summary[loc] = {"count": len(items), "total": total, "spends": items}
+        summary[loc] = {"count": len(items), "total": round(total, 2)}
 
     return json.dumps({"month": month_id, "locations": summary}, indent=2)
 
@@ -316,8 +311,7 @@ async def summarize_spends(month_id: int) -> str:
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, timeout=30.0)
+    response = await _http_client.get(url, headers=headers)
 
     if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
@@ -369,8 +363,7 @@ async def get_spend_types() -> str:
         "Authorization": f"Token {_auth_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers, timeout=30.0)
+    response = await _http_client.get(url, headers=headers)
 
     if response.status_code == 200:
         return response.text
@@ -379,9 +372,14 @@ async def get_spend_types() -> str:
 
 
 if __name__ == "__main__":
+    import sys as _sys
+
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport == "sse":
-        print(f"Starting MCP SSE server on {mcp.settings.host}:{mcp.settings.port}")
+        print(
+            f"Starting MCP SSE server on {mcp.settings.host}:{mcp.settings.port}",
+            file=_sys.stderr,
+        )
         mcp.run(transport="sse")
     else:
         mcp.run()

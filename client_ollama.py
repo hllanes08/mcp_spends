@@ -27,6 +27,7 @@ load_dotenv()
 SERVER_SCRIPT = os.path.join(os.path.dirname(__file__), "server.py")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:latest")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "")
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "20"))
 
 
 def mcp_tools_to_openai_tools(mcp_tools: list) -> list[dict]:
@@ -44,33 +45,77 @@ def mcp_tools_to_openai_tools(mcp_tools: list) -> list[dict]:
     return tools
 
 
-async def process_response(client, session, messages, openai_tools, response):
-    """Process tool calls in a loop until the model gives a final text answer."""
-    while response.choices[0].message.tool_calls:
-        msg = response.choices[0].message
+def trim_messages(messages: list, max_pairs: int = MAX_HISTORY) -> list:
+    """Keep the system prompt + last N user/assistant pairs to limit context."""
+    if len(messages) <= 1 + max_pairs * 2:
+        return messages
+    return [messages[0]] + messages[-(max_pairs * 2):]
 
-        # Serialize assistant message as a dict so Ollama can parse it on
-        # subsequent requests (raw OpenAI objects break the message history).
+
+def stream_response(client, model, messages, tools):
+    """Stream a chat completion, printing tokens as they arrive."""
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=tools,
+        stream=True,
+    )
+
+    content_parts = []
+    tool_calls_by_index: dict[int, dict] = {}
+    print("\nAssistant: ", end="", flush=True)
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+
+        # Stream text content
+        if delta.content:
+            print(delta.content, end="", flush=True)
+            content_parts.append(delta.content)
+
+        # Accumulate tool calls
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                idx = tc.index
+                if idx not in tool_calls_by_index:
+                    tool_calls_by_index[idx] = {
+                        "id": tc.id or "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+                entry = tool_calls_by_index[idx]
+                if tc.id:
+                    entry["id"] = tc.id
+                if tc.function:
+                    if tc.function.name:
+                        entry["function"]["name"] += tc.function.name
+                    if tc.function.arguments:
+                        entry["function"]["arguments"] += tc.function.arguments
+
+    content = "".join(content_parts)
+    tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else None
+
+    if not tool_calls and content:
+        print(flush=True)
+
+    return content, tool_calls
+
+
+async def process_response(client, session, messages, openai_tools):
+    """Process tool calls in a loop until the model gives a final text answer."""
+    content, tool_calls = stream_response(client, OLLAMA_MODEL, messages, openai_tools)
+
+    while tool_calls:
         assistant_dict = {
             "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ],
+            "content": content or "",
+            "tool_calls": tool_calls,
         }
         messages.append(assistant_dict)
 
-        for tool_call in msg.tool_calls:
-            name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments)
+        for tc in tool_calls:
+            name = tc["function"]["name"]
+            args = json.loads(tc["function"]["arguments"])
             print(f"  -> Calling tool: {name}({args})")
 
             result = await session.call_tool(name, arguments=args)
@@ -81,18 +126,15 @@ async def process_response(client, session, messages, openai_tools, response):
 
             messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": tc["id"],
                 "content": result_text,
             })
 
-        response = client.chat.completions.create(
-            model=OLLAMA_MODEL,
-            messages=messages,
-            tools=openai_tools,
-        )
+        content, tool_calls = stream_response(client, OLLAMA_MODEL, messages, openai_tools)
 
-    final_text = response.choices[0].message.content or ""
+    final_text = content or ""
     messages.append({"role": "assistant", "content": final_text})
+    print()
     return final_text
 
 
@@ -111,77 +153,78 @@ async def run():
                 async with ClientSession(read, write) as session:
                     yield session
         else:
+            env = {**os.environ, "MCP_TRANSPORT": "stdio"}
             server_params = StdioServerParameters(
                 command=sys.executable,
                 args=[SERVER_SCRIPT],
+                env=env,
             )
             async with stdio_client(server_params) as (read, write):
                 async with ClientSession(read, write) as session:
                     yield session
 
     async with mcp_connection() as session:
-            await session.initialize()
+        await session.initialize()
 
-            mcp_tools = (await session.list_tools()).tools
-            print(f"Connected to MCP server. Available tools: {[t.name for t in mcp_tools]}")
+        mcp_tools = (await session.list_tools()).tools
+        print(f"Connected to MCP server. Available tools: {[t.name for t in mcp_tools]}")
 
-            openai_tools = mcp_tools_to_openai_tools(mcp_tools)
+        openai_tools = mcp_tools_to_openai_tools(mcp_tools)
 
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"You are a helpful assistant with access to tools.\n"
-                        f"Today's date is {date.today().isoformat()}.\n"
-                        "When the user asks about spends or expenses for a specific month, "
-                        "use the get_spends_by_month tool with the month as an integer "
-                        "(1 = January, 2 = February, ..., 12 = December).\n"
-                        "When the user says 'this month' use the current month based on today's date.\n"
-                        "When the user wants to create a new spend, use the create_spend tool.\n"
-                        "When the user asks to filter or search spends by category or spend type, "
-                        "first call get_spend_types to find the matching type ID, then call "
-                        "search_spends_by_category with that type ID.\n"
-                        "When the user asks to see spends grouped or broken down by location, "
-                        "use the get_spends_grouped_by_location tool.\n"
-                        "When the user asks for a summary, overview, or report of a month's spending, "
-                        "use the summarize_spends tool. Present the results clearly with totals, "
-                        "category breakdowns, location breakdowns, and top expenses.\n"
-                        "Before making any data requests, call check_session first. "
-                        "If the session is active, proceed without logging in again. "
-                        "Only call the login tool if check_session says there is no active session.\n"
-                        "The user can say 'logout' to clear the saved session."
-                    ),
-                },
-            ]
+        # Check session status once at startup to inform the system prompt
+        session_result = await session.call_tool("check_session", arguments={})
+        session_status = " ".join(
+            c.text for c in session_result.content if hasattr(c, "text")
+        )
+        is_logged_in = "active" in session_status.lower()
 
-            print(f"\nChatbot ready! Using model: {OLLAMA_MODEL}")
-            print("Type 'quit' or 'exit' to stop.\n")
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a helpful assistant with access to tools.\n"
+                    f"Today's date is {date.today().isoformat()}.\n"
+                    f"Session status: {'LOGGED IN — do not call login or check_session unless the user asks to switch accounts.' if is_logged_in else 'NOT LOGGED IN — call login before making data requests.'}\n"
+                    "When the user asks about spends or expenses for a specific month, "
+                    "use the get_spends_by_month tool with the month as an integer "
+                    "(1 = January, 2 = February, ..., 12 = December).\n"
+                    "When the user says 'this month' use the current month based on today's date.\n"
+                    "When the user wants to create a new spend, use the create_spend tool.\n"
+                    "When the user asks to filter or search spends by category or spend type, "
+                    "first call get_spend_types to find the matching type ID, then call "
+                    "search_spends_by_category with that type ID.\n"
+                    "When the user asks to see spends grouped or broken down by location, "
+                    "use the get_spends_grouped_by_location tool.\n"
+                    "When the user asks for a summary, overview, or report of a month's spending, "
+                    "use the summarize_spends tool. Present the results clearly with totals, "
+                    "category breakdowns, location breakdowns, and top expenses.\n"
+                    "The user can say 'logout' to clear the saved session.\n"
+                    "Be concise in your answers. Present data in tables or bullet points."
+                ),
+            },
+        ]
 
-            while True:
-                try:
-                    user_input = input("You: ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    print("\nGoodbye!")
-                    break
+        print(f"\nChatbot ready! Using model: {OLLAMA_MODEL}")
+        print(f"Session: {'Active' if is_logged_in else 'Not logged in'}")
+        print("Type 'quit' or 'exit' to stop.\n")
 
-                if not user_input:
-                    continue
-                if user_input.lower() in ("quit", "exit"):
-                    print("Goodbye!")
-                    break
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye!")
+                break
 
-                messages.append({"role": "user", "content": user_input})
+            if not user_input:
+                continue
+            if user_input.lower() in ("quit", "exit"):
+                print("Goodbye!")
+                break
 
-                response = client.chat.completions.create(
-                    model=OLLAMA_MODEL,
-                    messages=messages,
-                    tools=openai_tools,
-                )
+            messages.append({"role": "user", "content": user_input})
+            messages = trim_messages(messages)
 
-                final_text = await process_response(
-                    client, session, messages, openai_tools, response
-                )
-                print(f"\nAssistant: {final_text}\n")
+            await process_response(client, session, messages, openai_tools)
 
 
 if __name__ == "__main__":

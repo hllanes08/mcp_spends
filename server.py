@@ -7,12 +7,56 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
-mcp = FastMCP("My MCP Server")
+mcp = FastMCP(
+    "My MCP Server",
+    host=os.getenv("MCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("MCP_PORT", "8888")),
+)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "")
 
-# In-memory token store for the session
-_auth_token: str = ""
+_TOKEN_FILE = os.path.join(os.path.dirname(__file__), ".session_token")
+
+
+def _load_saved_token() -> str:
+    try:
+        with open(_TOKEN_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _save_token(token: str) -> None:
+    with open(_TOKEN_FILE, "w") as f:
+        f.write(token)
+
+
+def _clear_token() -> None:
+    try:
+        os.remove(_TOKEN_FILE)
+    except FileNotFoundError:
+        pass
+
+
+# Load saved token from previous session
+_auth_token: str = _load_saved_token()
+
+
+@mcp.tool()
+def check_session() -> str:
+    """Check if there is an active saved session (logged in or not)."""
+    if _auth_token:
+        return "Session active. You are already logged in."
+    return "No active session. Please login first."
+
+
+@mcp.tool()
+def logout() -> str:
+    """Logout and clear the saved session token."""
+    global _auth_token
+    _auth_token = ""
+    _clear_token()
+    return "Logged out. Session cleared."
 
 
 @mcp.tool()
@@ -59,6 +103,7 @@ async def login(username: str, password: str) -> str:
         )
         if not _auth_token:
             return f"Login response missing token. Keys: {list(data.keys())}"
+        _save_token(_auth_token)
         return "Login successful. You can now make API requests."
     else:
         return f"Login failed. Status: {response.status_code}\n{response.text}"
@@ -177,5 +222,166 @@ async def create_spend(
         return f"Error: Status {response.status_code}\n{response.text}"
 
 
+@mcp.tool()
+async def search_spends_by_category(month_id: int, spend_type: int) -> str:
+    """Search spends for a given month filtered by category (spend type).
+
+    Args:
+        month_id: Month ID as an integer (1 = January, 12 = December).
+        spend_type: Spend type ID to filter by. Use get_spend_types to see available types.
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/month/{month_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    spends = json.loads(response.text)
+    filtered = [s for s in spends if s.get("spend_type") == spend_type]
+    total = sum(float(s.get("amount", 0)) for s in filtered)
+    return json.dumps({
+        "spend_type": spend_type,
+        "month": month_id,
+        "count": len(filtered),
+        "total": total,
+        "spends": filtered,
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_spends_grouped_by_location(month_id: int) -> str:
+    """Get spends for a month grouped by location with totals per location.
+
+    Args:
+        month_id: Month ID as an integer (1 = January, 12 = December).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/month/{month_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    spends = json.loads(response.text)
+    groups: dict[str, list] = {}
+    for s in spends:
+        loc = s.get("location", "Unknown") or "Unknown"
+        groups.setdefault(loc, []).append(s)
+
+    summary = {}
+    for loc, items in groups.items():
+        total = sum(float(i.get("amount", 0)) for i in items)
+        summary[loc] = {"count": len(items), "total": total, "spends": items}
+
+    return json.dumps({"month": month_id, "locations": summary}, indent=2)
+
+
+@mcp.tool()
+async def summarize_spends(month_id: int) -> str:
+    """Generate a full summary of spends for a month: total spent, breakdown
+    by category (spend type) and by location, plus the top 5 largest spends.
+
+    Args:
+        month_id: Month ID as an integer (1 = January, 12 = December).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/month/{month_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    spends = json.loads(response.text)
+    if not spends:
+        return json.dumps({"month": month_id, "message": "No spends found."})
+
+    grand_total = sum(float(s.get("amount", 0)) for s in spends)
+
+    by_type: dict[str, dict] = {}
+    for s in spends:
+        st = str(s.get("spend_type", "Unknown"))
+        entry = by_type.setdefault(st, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += float(s.get("amount", 0))
+
+    by_location: dict[str, dict] = {}
+    for s in spends:
+        loc = s.get("location", "Unknown") or "Unknown"
+        entry = by_location.setdefault(loc, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += float(s.get("amount", 0))
+
+    top_spends = sorted(spends, key=lambda x: float(x.get("amount", 0)), reverse=True)[:5]
+
+    return json.dumps({
+        "month": month_id,
+        "total_spends": len(spends),
+        "grand_total": grand_total,
+        "by_category": by_type,
+        "by_location": by_location,
+        "top_5_spends": top_spends,
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_spend_types() -> str:
+    """Retrieve the list of available spend types."""
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spend-types/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+
+    if response.status_code == 200:
+        return response.text
+    else:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+
 if __name__ == "__main__":
-    mcp.run()
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "sse":
+        print(f"Starting MCP SSE server on {mcp.settings.host}:{mcp.settings.port}")
+        mcp.run(transport="sse")
+    else:
+        mcp.run()

@@ -12,16 +12,21 @@ import asyncio
 import json
 import sys
 import os
+from datetime import date
+
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 
 load_dotenv()
 
 SERVER_SCRIPT = os.path.join(os.path.dirname(__file__), "server.py")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:latest")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "")
 
 
 def mcp_tools_to_openai_tools(mcp_tools: list) -> list[dict]:
@@ -42,10 +47,28 @@ def mcp_tools_to_openai_tools(mcp_tools: list) -> list[dict]:
 async def process_response(client, session, messages, openai_tools, response):
     """Process tool calls in a loop until the model gives a final text answer."""
     while response.choices[0].message.tool_calls:
-        assistant_message = response.choices[0].message
-        messages.append(assistant_message)
+        msg = response.choices[0].message
 
-        for tool_call in assistant_message.tool_calls:
+        # Serialize assistant message as a dict so Ollama can parse it on
+        # subsequent requests (raw OpenAI objects break the message history).
+        assistant_dict = {
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        }
+        messages.append(assistant_dict)
+
+        for tool_call in msg.tool_calls:
             name = tool_call.function.name
             args = json.loads(tool_call.function.arguments)
             print(f"  -> Calling tool: {name}({args})")
@@ -54,7 +77,7 @@ async def process_response(client, session, messages, openai_tools, response):
             result_text = " ".join(
                 c.text for c in result.content if hasattr(c, "text")
             )
-            print(f"  <- Result: {result_text}")
+            print(f"  <- Result: {result_text[:200]}")
 
             messages.append({
                 "role": "tool",
@@ -68,25 +91,35 @@ async def process_response(client, session, messages, openai_tools, response):
             tools=openai_tools,
         )
 
-    final_text = response.choices[0].message.content
+    final_text = response.choices[0].message.content or ""
     messages.append({"role": "assistant", "content": final_text})
     return final_text
 
 
 async def run():
     client = OpenAI(
-        base_url="http://localhost:11434/v1",
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         api_key="ollama",
         timeout=120.0,
     )
 
-    server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[SERVER_SCRIPT],
-    )
+    @asynccontextmanager
+    async def mcp_connection():
+        if MCP_SERVER_URL:
+            print(f"Connecting to remote MCP server: {MCP_SERVER_URL}")
+            async with sse_client(MCP_SERVER_URL) as (read, write):
+                async with ClientSession(read, write) as session:
+                    yield session
+        else:
+            server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[SERVER_SCRIPT],
+            )
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    yield session
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
+    async with mcp_connection() as session:
             await session.initialize()
 
             mcp_tools = (await session.list_tools()).tools
@@ -98,13 +131,25 @@ async def run():
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful assistant with access to tools.\n"
+                        f"You are a helpful assistant with access to tools.\n"
+                        f"Today's date is {date.today().isoformat()}.\n"
                         "When the user asks about spends or expenses for a specific month, "
                         "use the get_spends_by_month tool with the month as an integer "
                         "(1 = January, 2 = February, ..., 12 = December).\n"
+                        "When the user says 'this month' use the current month based on today's date.\n"
                         "When the user wants to create a new spend, use the create_spend tool.\n"
-                        "If the user is not logged in yet, call the login tool first "
-                        "before making any data requests."
+                        "When the user asks to filter or search spends by category or spend type, "
+                        "first call get_spend_types to find the matching type ID, then call "
+                        "search_spends_by_category with that type ID.\n"
+                        "When the user asks to see spends grouped or broken down by location, "
+                        "use the get_spends_grouped_by_location tool.\n"
+                        "When the user asks for a summary, overview, or report of a month's spending, "
+                        "use the summarize_spends tool. Present the results clearly with totals, "
+                        "category breakdowns, location breakdowns, and top expenses.\n"
+                        "Before making any data requests, call check_session first. "
+                        "If the session is active, proceed without logging in again. "
+                        "Only call the login tool if check_session says there is no active session.\n"
+                        "The user can say 'logout' to clear the saved session."
                     ),
                 },
             ]

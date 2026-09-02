@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asistente Financiero</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="chat-body">
+  <!-- Header -->
+  <header class="chat-header">
+    <div class="header-left">
+      <div class="logo-icon-sm">
+        <svg width="24" height="24" viewBox="0 0 40 40" fill="none">
+          <path d="M8 28L16 18L22 24L32 12" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M26 12H32V18" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <span class="header-title">Asistente Financiero</span>
+    </div>
+    <div class="header-right">
+      <span class="header-user">{{ username }}</span>
+      <a href="{{ url_for('logout') }}" class="btn-logout">Cerrar Sesion</a>
+    </div>
+  </header>
+
+  <!-- Chat area -->
+  <main class="chat-main">
+    <div class="chat-messages" id="chatMessages">
+      <!-- Welcome message -->
+      <div class="msg msg-assistant">
+        <div class="msg-avatar">
+          <svg width="20" height="20" viewBox="0 0 40 40" fill="none">
+            <path d="M8 28L16 18L22 24L32 12" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M26 12H32V18" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="msg-content">
+          <div class="msg-bubble assistant-bubble">
+            Hola! Soy tu asistente financiero. Puedo ayudarte a consultar gastos, crear registros, ver resumenes por mes o ano, y mas. Que necesitas?
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Input bar -->
+  <footer class="chat-footer">
+    <form id="chatForm" class="chat-input-bar">
+      <input type="text" id="chatInput" placeholder="Escribe tu mensaje..." autocomplete="off" autofocus>
+      <button type="submit" id="sendBtn" class="btn-send">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 2L11 13"/>
+          <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+        </svg>
+      </button>
+    </form>
+    <p class="chat-hint">Modelo: Gemini &middot; Herramientas MCP conectadas</p>
+  </footer>
+
+  <script>
+    const chatMessages = document.getElementById('chatMessages');
+    const chatForm = document.getElementById('chatForm');
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    function formatMarkdown(text) {
+      // Simple markdown: bold, bullet points, line breaks
+      let html = escapeHtml(text);
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+      html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
+      html = html.replace(/\n/g, '<br>');
+      return html;
+    }
+
+    function addMessage(role, text, toolLog) {
+      const wrapper = document.createElement('div');
+      wrapper.className = `msg msg-${role}`;
+
+      if (role === 'assistant') {
+        wrapper.innerHTML = `
+          <div class="msg-avatar">
+            <svg width="20" height="20" viewBox="0 0 40 40" fill="none">
+              <path d="M8 28L16 18L22 24L32 12" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M26 12H32V18" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="msg-content">
+            ${toolLog && toolLog.length ? `<div class="tool-log">${toolLog.map(t =>
+              `<div class="tool-entry"><span class="tool-name">${escapeHtml(t.tool)}</span><span class="tool-args">${escapeHtml(JSON.stringify(t.args))}</span></div>`
+            ).join('')}</div>` : ''}
+            <div class="msg-bubble assistant-bubble">${formatMarkdown(text)}</div>
+          </div>`;
+      } else {
+        wrapper.innerHTML = `
+          <div class="msg-content">
+            <div class="msg-bubble user-bubble">${escapeHtml(text)}</div>
+          </div>`;
+      }
+
+      chatMessages.appendChild(wrapper);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function addThinking() {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg msg-assistant';
+      wrapper.id = 'thinkingMsg';
+      wrapper.innerHTML = `
+        <div class="msg-avatar">
+          <svg width="20" height="20" viewBox="0 0 40 40" fill="none">
+            <path d="M8 28L16 18L22 24L32 12" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M26 12H32V18" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="msg-content">
+          <div class="msg-bubble assistant-bubble thinking">
+            <div class="dot-pulse"><span></span><span></span><span></span></div>
+            Procesando consulta...
+          </div>
+        </div>`;
+      chatMessages.appendChild(wrapper);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function removeThinking() {
+      const el = document.getElementById('thinkingMsg');
+      if (el) el.remove();
+    }
+
+    chatForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text) return;
+
+      addMessage('user', text);
+      chatInput.value = '';
+      sendBtn.disabled = true;
+      chatInput.disabled = true;
+      addThinking();
+
+      try {
+        const resp = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text }),
+        });
+        const data = await resp.json();
+        removeThinking();
+
+        if (data.error) {
+          addMessage('assistant', 'Error: ' + data.error, []);
+        } else {
+          addMessage('assistant', data.answer, data.tools_used);
+        }
+      } catch (err) {
+        removeThinking();
+        addMessage('assistant', 'Error de conexion. Intenta de nuevo.', []);
+      } finally {
+        sendBtn.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    });
+  </script>
+</body>
+</html>

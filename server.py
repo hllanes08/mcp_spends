@@ -441,6 +441,72 @@ async def summarize_spends(month_id: int) -> str:
 
 
 @mcp.tool()
+async def summarize_spends_by_year(year: int) -> str:
+    """Generate a full summary of spends for an entire year: total spent,
+    breakdown by category (spend type) and by location, plus the top 5
+    largest spends. Use this when the user asks which category had the most
+    spends in a year, or wants an annual overview.
+
+    Args:
+        year: Year number (e.g. 2025, 2026).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/{year}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    if not spends:
+        return json.dumps({"year": year, "message": "No spends found."})
+
+    grand_total = sum(float(s.get("amount", 0)) for s in spends)
+
+    by_type: dict[str, dict] = {}
+    for s in spends:
+        st_raw = s.get("spend_type", "Unknown")
+        st = st_raw.get("name", str(st_raw)) if isinstance(st_raw, dict) else str(st_raw)
+        entry = by_type.setdefault(st, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += float(s.get("amount", 0))
+
+    by_location: dict[str, dict] = {}
+    for s in spends:
+        loc = s.get("location", "Unknown") or "Unknown"
+        entry = by_location.setdefault(loc, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += float(s.get("amount", 0))
+
+    # Round totals
+    for v in by_type.values():
+        v["total"] = round(v["total"], 2)
+    for v in by_location.values():
+        v["total"] = round(v["total"], 2)
+
+    top_spends = sorted(spends, key=lambda x: float(x.get("amount", 0)), reverse=True)[:5]
+
+    return json.dumps({
+        "year": year,
+        "total_spends": len(spends),
+        "grand_total": round(grand_total, 2),
+        "by_category": by_type,
+        "by_location": by_location,
+        "top_5_spends": top_spends,
+    }, indent=2)
+
+
+@mcp.tool()
 async def get_spend_types() -> str:
     """Retrieve the list of available spend types."""
     if not API_BASE_URL:

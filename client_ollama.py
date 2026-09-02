@@ -286,6 +286,8 @@ async def run():
                     "When the user asks for a summary, overview, or report of a month's spending, "
                     "use the summarize_spends tool. Present the results clearly with totals, "
                     "category breakdowns, location breakdowns, and top expenses.\n"
+                    "When the user asks for a yearly summary, which category spent the most in a year, "
+                    "or an annual breakdown, use the summarize_spends_by_year tool.\n"
                     "The user can say 'logout' to clear the saved session.\n"
                     "Be concise in your answers. Present data in tables or bullet points."
                 ),

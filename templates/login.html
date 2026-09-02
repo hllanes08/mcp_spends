@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Control Financiero - Iniciar Sesion</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-wrapper">
+    <!-- Logo -->
+    <div class="login-logo">
+      <div class="logo-icon">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+          <path d="M8 28L16 18L22 24L32 12" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M26 12H32V18" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <p class="logo-label">Control Financiero</p>
+    </div>
+
+    <h1 class="login-title">Bienvenido de nuevo</h1>
+    <p class="login-subtitle">Accede a tu libertad financiera.</p>
+
+    <div class="login-card">
+      {% if error %}
+      <div class="login-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('login') }}" id="loginForm">
+        <label class="field-label">Correo Electronico</label>
+        <div class="input-group">
+          <span class="input-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <path d="M22 4L12 13L2 4"/>
+            </svg>
+          </span>
+          <input type="text" name="email" placeholder="tu@correo.com" required autocomplete="username">
+        </div>
+
+        <div class="field-label-row">
+          <label class="field-label">Contrasena</label>
+        </div>
+        <div class="input-group">
+          <span class="input-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2"/>
+              <path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+          </span>
+          <input type="password" name="password" id="passwordInput" placeholder="********" required autocomplete="current-password">
+          <button type="button" class="toggle-pw" onclick="togglePassword()">
+            <svg id="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+        </div>
+
+        <button type="submit" class="btn-login" id="btnLogin">
+          <span id="btnText">Iniciar Sesion</span>
+          <span id="btnSpinner" class="spinner hidden"></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="btnArrow">
+            <path d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    function togglePassword() {
+      const inp = document.getElementById('passwordInput');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', function () {
+      const btn = document.getElementById('btnLogin');
+      btn.disabled = true;
+      document.getElementById('btnText').textContent = 'Conectando...';
+      document.getElementById('btnArrow').classList.add('hidden');
+      document.getElementById('btnSpinner').classList.remove('hidden');
+    });
+  </script>
+</body>
+</html>

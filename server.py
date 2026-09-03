@@ -193,10 +193,18 @@ async def get_spends_by_year(year: int) -> str:
 
     response = await _http_client.get(url, headers=headers)
 
-    if response.status_code == 200:
-        return response.text
-    else:
+    if response.status_code != 200:
         return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    total = sum(float(s.get("amount", 0)) for s in spends)
+    return json.dumps({
+        "year": year,
+        "count": len(spends),
+        "total": round(total, 2),
+        "spends": spends,
+    }, indent=2)
 
 
 @mcp.tool()
@@ -503,6 +511,82 @@ async def summarize_spends_by_year(year: int) -> str:
         "by_category": by_type,
         "by_location": by_location,
         "top_5_spends": top_spends,
+    }, indent=2)
+
+
+@mcp.tool()
+async def search_spends_by_description_month(month_id: int, query: str) -> str:
+    """Search spends in a given month whose description matches a keyword.
+
+    Args:
+        month_id: Month ID as an integer (1 = January, 12 = December).
+        query: Text to search for in spend descriptions (case-insensitive).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/month/{month_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    q = query.lower()
+    filtered = [s for s in spends if q in (s.get("description") or "").lower()]
+    total = sum(float(s.get("amount", 0)) for s in filtered)
+    return json.dumps({
+        "query": query,
+        "month": month_id,
+        "count": len(filtered),
+        "total": round(total, 2),
+        "spends": filtered,
+    }, indent=2)
+
+
+@mcp.tool()
+async def search_spends_by_description_year(year: int, query: str) -> str:
+    """Search spends in a given year whose description matches a keyword.
+
+    Args:
+        year: Year number (e.g. 2025, 2026).
+        query: Text to search for in spend descriptions (case-insensitive).
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/{year}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    q = query.lower()
+    filtered = [s for s in spends if q in (s.get("description") or "").lower()]
+    total = sum(float(s.get("amount", 0)) for s in filtered)
+    return json.dumps({
+        "query": query,
+        "year": year,
+        "count": len(filtered),
+        "total": round(total, 2),
+        "spends": filtered,
     }, indent=2)
 
 

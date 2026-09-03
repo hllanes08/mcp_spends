@@ -106,6 +106,10 @@ SYSTEM_INSTRUCTION = (
     "category breakdowns, location breakdowns, and top expenses.\n"
     "When the user asks for a yearly summary, which category spent the most in a year, "
     "or an annual breakdown, use the summarize_spends_by_year tool.\n"
+    "When the user wants to search or find spends by description or keyword in a specific "
+    "month, use the search_spends_by_description_month tool.\n"
+    "When the user wants to search or find spends by description or keyword in a specific "
+    "year, use the search_spends_by_description_year tool.\n"
     "Be concise in your answers. Present data in tables or bullet points."
 )
 
@@ -353,6 +357,6 @@ def logout():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("FLASK_PORT", "5000"))
+    port = int(os.getenv("FLASK_PORT", "8000"))
     debug = os.getenv("FLASK_DEBUG", "true").lower() in ("1", "true")
     app.run(host="0.0.0.0", port=port, debug=debug)

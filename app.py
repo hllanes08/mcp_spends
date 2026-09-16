@@ -113,6 +113,16 @@ SYSTEM_INSTRUCTION = (
     "month, use the search_spends_by_description_month tool.\n"
     "When the user wants to search or find spends by description or keyword in a specific "
     "year, use the search_spends_by_description_year tool.\n"
+    "When the user wants to search or find spends by amount or value in a specific month, "
+    "use the search_spends_by_value_month tool with min_amount and/or max_amount. "
+    "For an exact amount, set both min_amount and max_amount to that value.\n"
+    "When the user wants to search or find spends by amount or value in a specific year, "
+    "use the search_spends_by_value_year tool with min_amount and/or max_amount.\n"
+    "When the user wants to delete a single spend, use the delete_spend tool with "
+    "the spend ID. Always confirm with the user before deleting.\n"
+    "When the user wants to delete multiple spends at once, use the delete_spends "
+    "tool with comma-separated spend IDs (e.g. '10,23,45'). Always confirm with "
+    "the user before deleting and list the records that will be removed.\n"
     "Be concise in your answers. Present data in tables or bullet points."
 )
 
@@ -336,6 +346,15 @@ def api_chat():
             _process_prompt(user_message, history)
         )
     finally:
+        # Gracefully shut down: cancel lingering tasks from MCP transports
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+        loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 
     session["chat_history"] = updated_history

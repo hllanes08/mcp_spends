@@ -591,6 +591,98 @@ async def search_spends_by_description_year(year: int, query: str) -> str:
 
 
 @mcp.tool()
+async def search_spends_by_value_month(month_id: int, min_amount: float = 0, max_amount: float = 0) -> str:
+    """Search spends in a given month filtered by amount value range.
+
+    Args:
+        month_id: Month ID as an integer (1 = January, 12 = December).
+        min_amount: Minimum amount (inclusive). Use 0 to ignore lower bound.
+        max_amount: Maximum amount (inclusive). Use 0 to ignore upper bound.
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/month/{month_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    filtered = []
+    for s in spends:
+        amt = float(s.get("amount", 0))
+        if min_amount and amt < min_amount:
+            continue
+        if max_amount and amt > max_amount:
+            continue
+        filtered.append(s)
+    total = sum(float(s.get("amount", 0)) for s in filtered)
+    return json.dumps({
+        "month": month_id,
+        "min_amount": min_amount,
+        "max_amount": max_amount,
+        "count": len(filtered),
+        "total": round(total, 2),
+        "spends": filtered,
+    }, indent=2)
+
+
+@mcp.tool()
+async def search_spends_by_value_year(year: int, min_amount: float = 0, max_amount: float = 0) -> str:
+    """Search spends in a given year filtered by amount value range.
+
+    Args:
+        year: Year number (e.g. 2025, 2026).
+        min_amount: Minimum amount (inclusive). Use 0 to ignore lower bound.
+        max_amount: Maximum amount (inclusive). Use 0 to ignore upper bound.
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/history/{year}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+    data = json.loads(response.text)
+    spends = data.get("spends", data) if isinstance(data, dict) else data
+    filtered = []
+    for s in spends:
+        amt = float(s.get("amount", 0))
+        if min_amount and amt < min_amount:
+            continue
+        if max_amount and amt > max_amount:
+            continue
+        filtered.append(s)
+    total = sum(float(s.get("amount", 0)) for s in filtered)
+    return json.dumps({
+        "year": year,
+        "min_amount": min_amount,
+        "max_amount": max_amount,
+        "count": len(filtered),
+        "total": round(total, 2),
+        "spends": filtered,
+    }, indent=2)
+
+
+@mcp.tool()
 async def get_spend_types() -> str:
     """Retrieve the list of available spend types."""
     if not API_BASE_URL:
@@ -609,6 +701,67 @@ async def get_spend_types() -> str:
 
     if response.status_code == 200:
         return response.text
+    else:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+
+@mcp.tool()
+async def delete_spend(spend_id: int) -> str:
+    """Delete a single spend record by its ID.
+
+    Args:
+        spend_id: The ID of the spend to delete.
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/delete/{spend_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.delete(url, headers=headers)
+
+    if response.status_code == 200:
+        data = json.loads(response.text)
+        return f"Deleted {data.get('deleted', 1)} spend(s) successfully."
+    else:
+        return f"Error: Status {response.status_code}\n{response.text}"
+
+
+@mcp.tool()
+async def delete_spends(spend_ids: str) -> str:
+    """Delete multiple spend records by their IDs in a single request.
+
+    Args:
+        spend_ids: Comma-separated list of spend IDs to delete (e.g. '10,23,45').
+    """
+    if not API_BASE_URL:
+        return "Error: API_BASE_URL is not set in .env"
+    if not _auth_token:
+        return "Error: Not authenticated. Please call the login tool first."
+
+    ids = [int(id_str.strip()) for id_str in spend_ids.split(",")]
+
+    url = f"{API_BASE_URL.rstrip('/')}/api/spends/delete/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {_auth_token}",
+    }
+
+    response = await _http_client.request(
+        method="DELETE",
+        url=url,
+        headers=headers,
+        json={"ids": ids},
+    )
+
+    if response.status_code == 200:
+        data = json.loads(response.text)
+        return f"Deleted {data.get('deleted', len(ids))} spend(s) successfully."
     else:
         return f"Error: Status {response.status_code}\n{response.text}"
 
